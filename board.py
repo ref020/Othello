@@ -65,6 +65,65 @@ class Board:
                 raise IndexError("Cell position out of bounds.")
 
     def updateBoard(self, row, col, color):
-        #updates the board after a move is made
-        self.placeDisk(row, col, color)
-        # Additional logic to flip opponent's disks would go here
+        flips = self.getFlipsForMove(row, col, color)
+        if not flips:
+            print(f"No disks to flip for move at ({row}, {col}) with color {color}. Move is invalid.")
+            return False
+        else:
+            self.placeDisk(row, col, color)
+
+            for flipRow, flipCol in flips:
+                self.grid[flipRow][flipCol] = color
+
+            print(f"Flipped disks at: {flips}")
+            return True
+
+
+    def getFlipsInDirection(self, row, col, color, rowDirection, colDirection):
+        currentRow = row + rowDirection
+        currentCol = col + colDirection
+        flips = []
+
+        while 0 <= currentRow < self.size and 0 <= currentCol < self.size:
+            currentCell = self.grid[currentRow][currentCol]
+            if currentCell == EMPTY_CELL:
+                return []
+            elif currentCell == color:
+                return flips
+            else:
+                flips.append((currentRow, currentCol))
+                currentRow += rowDirection
+                currentCol += colDirection
+        return []
+
+    def getFlipsForMove(self, row, col, color):
+        if 0 <= row < self.size and 0 <= col < self.size:
+            if self.grid[row][col] != EMPTY_CELL:
+                return[]
+
+            flips = []
+            directions = [(-1, -1), (-1, 0), (-1, 1),
+                          (0, -1),          (0, 1),
+                          (1, -1), (1, 0), (1, 1)]
+
+            for rowDirection, colDirection in directions:
+                flipsInDirection = self.getFlipsInDirection(row, col, color, rowDirection, colDirection)
+                flips.extend(flipsInDirection)
+            return flips
+        else:
+            return []
+
+    def getLegalMoves(self, color):
+        legalMoves = []
+        for row in range(self.size):
+            for col in range(self.size):
+                if self.grid[row][col] == EMPTY_CELL:
+                    flips = self.getFlipsForMove(row, col, color)
+                    if flips:
+                        legalMoves.append((row, col))
+        return legalMoves
+
+    def isGameOver(self):
+        blackLegalMoves = self.getLegalMoves(BLACK_DISK)
+        whiteLegalMoves = self.getLegalMoves(WHITE_DISK)
+        return not blackLegalMoves and not whiteLegalMoves

@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import messagebox
 from board import Board, BOARD_SIZE, BLACK_DISK, WHITE_DISK, EMPTY_CELL
+from game import Game
 
 #CONSTANTS
 WINDOW_WIDTH = 900
@@ -22,8 +23,8 @@ DARK_THEME = {
 
 
 class OthelloGUI:
-    def __init__(self, gameBoard=None):
-        self.gameBoard = gameBoard if gameBoard is not None else Board()
+    def __init__(self, game=None):
+        self.game = game if game is not None else Game()
         self.root = tk.Tk()
         self.root.title("Othello")
         self.root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
@@ -51,8 +52,12 @@ class OthelloGUI:
         #KEYBOARD SHORTCUTS AND RESIZING
         self.root.bind("<F11>", self.toggleFullscreen)
         self.root.bind("<Escape>", self.exitFullscreen)
+        self.canvas.bind("<Button-1>", self.handleClick)
         self.boardFrame.bind("<Configure>", self.resizeBoard)
         self.root.after_idle(self.refreshBoard)
+
+        #WELCOME MESSAGE
+        self.messageLabel.configure(text="Welcome to Othello!")
 
     def createMenu(self):
         #CREATE NATIVE DESKTOP MENU BAR
@@ -161,7 +166,7 @@ class OthelloGUI:
         #RENDER DISCS FROM THE BOARD MODEL, NOT A SECOND GUI BOARD
         for row in range(BOARD_SIZE):
             for col in range(BOARD_SIZE):
-                color = self.gameBoard.getCell(row, col)
+                color = self.game.gameBoard.getCell(row, col)
                 if color == EMPTY_CELL:
                     continue
                 margin = self.squarePixels * 0.12
@@ -210,27 +215,36 @@ class OthelloGUI:
 
     def updateStatus(self):
         #READ SCORES DIRECTLY FROM THE CURRENT BOARD
-        blackScore = sum(row.count(BLACK_DISK) for row in self.gameBoard.grid)
-        whiteScore = sum(row.count(WHITE_DISK) for row in self.gameBoard.grid)
+        blackScore = self.game.getScores()[0]
+        whiteScore = self.game.getScores()[1]
         self.blackScoreLabel.configure(text=f"Black: {blackScore}")
         self.whiteScoreLabel.configure(text=f"White: {whiteScore}")
-        self.turnLabel.configure(text="Black's Turn")
+        self.turnLabel.configure(text=f"Turn: {'Black' if self.game.currentPlayer == BLACK_DISK else 'White'}")
         self.modeLabel.configure(text=self.gameMode.get())
-        self.messageLabel.configure(text="Welcome to Othello!")
         self.detailsLabel.configure(text=f"AI Depth: {self.aiDepth.get()}  |  "
                                          f"Alpha-Beta: {'On' if self.alphaBetaEnabled.get() else 'Off'}  |  "
                                          f"Debug: {'On' if self.debugEnabled.get() else 'Off'}")
+        if self.game.gameOver:
+            if self.game.winner == BLACK_DISK:
+                self.messageLabel.configure(text="Game Over! Black wins!")
+                self.turnLabel.configure(text="Game Over!")
+            elif self.game.winner == WHITE_DISK:
+                self.messageLabel.configure(text="Game Over! White wins!")
+                self.turnLabel.configure(text="Game Over!")
+            else:
+                self.messageLabel.configure(text="Game Over! It's a tie!")
+                self.turnLabel.configure(text="Game Over!")
+
 
     def changeGameMode(self):
-        #MODE SELECTION IS SAVED; GAME CONTROLLER WILL USE IT LATER
         self.updateStatus()
         self.messageLabel.configure(text=f"Selected: {self.gameMode.get()}")
 
     def newGame(self):
-        #RESET THE BOARD WITHOUT IMPLEMENTING TURN LOGIC YET
-        self.gameBoard.startingState()
+        self.game.resetGame()
         self.updateStatus()
         self.refreshBoard()
+        self.messageLabel.configure(text="New game started. Black goes first.")
 
     def toggleFullscreen(self, event=None):
         #F11 TO ENTER OR EXIT FULLSCREEN
@@ -287,3 +301,23 @@ class OthelloGUI:
     def run(self):
         #START THE TKINTER EVENT LOOP
         self.root.mainloop()
+
+    def handleClick(self, event):
+        if self.squarePixels <= 0:
+            return
+        
+        col = int(event.x // self.squarePixels)
+        row = int(event.y // self.squarePixels)
+
+        if 0 <= row < BOARD_SIZE and 0 <= col < BOARD_SIZE:
+            if self.game.makeMove(row, col):
+                self.messageLabel.configure(text=f"Move made at ({row}, {col}) by {'Black' if self.game.currentPlayer == WHITE_DISK else 'White'}.")
+                self.updateStatus()
+                self.refreshBoard()
+            else:
+                self.messageLabel.configure(text=f"Invalid move at ({row}, {col}). Try again.")
+        
+
+
+
+        
