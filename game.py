@@ -15,10 +15,8 @@ class Game:
                 self.advanceTurn()
                 return True
             else:
-                print(f"Invalid move at ({row}, {col}) for player {self.currentPlayer}.")
                 return False
         else:
-            print("Game is over. No more moves can be made.")
             return False
 
     def advanceTurn(self):
@@ -26,7 +24,6 @@ class Game:
         if newTurnAvailable:
             self.currentPlayer *= -1
         else:
-            print(f"No legal moves available for player {self.currentPlayer*-1}. Turn remains with player {self.currentPlayer}.")
             if not self.gameBoard.getLegalMoves(self.currentPlayer):
                 self.gameOver = True
                 self.getWinner()

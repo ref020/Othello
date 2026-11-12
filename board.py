@@ -67,7 +67,6 @@ class Board:
     def updateBoard(self, row, col, color):
         flips = self.getFlipsForMove(row, col, color)
         if not flips:
-            print(f"No disks to flip for move at ({row}, {col}) with color {color}. Move is invalid.")
             return False
         else:
             self.placeDisk(row, col, color)
@@ -75,7 +74,6 @@ class Board:
             for flipRow, flipCol in flips:
                 self.grid[flipRow][flipCol] = color
 
-            print(f"Flipped disks at: {flips}")
             return True
 
 

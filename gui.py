@@ -1,14 +1,18 @@
+import queue
+import threading
 import tkinter as tk
 from tkinter import messagebox
-from board import Board, BOARD_SIZE, BLACK_DISK, WHITE_DISK, EMPTY_CELL
+
+from ai import OthelloAI
+from board import BOARD_SIZE, BLACK_DISK, WHITE_DISK, EMPTY_CELL
 from game import Game
 
-#CONSTANTS
+# WINDOW AND BOARD SETTINGS
 WINDOW_WIDTH = 900
 WINDOW_HEIGHT = 780
 BOARD_MARGIN = 36
 BOARD_BORDER = 8
-MIN_BOARD_SIZE = 160
+AI_DELAY_MS = 180
 
 LIGHT_THEME = {
     "background": "#e5edf6", "panel": "#f5f8fc", "text": "#24364b",
@@ -25,12 +29,13 @@ DARK_THEME = {
 class OthelloGUI:
     def __init__(self, game=None):
         self.game = game if game is not None else Game()
+        self.ai = OthelloAI()
         self.root = tk.Tk()
         self.root.title("Othello")
         self.root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
         self.root.minsize(400, 440)
 
-        #APPLICATION SETTINGS
+        # APPLICATION SETTINGS
         self.isFullscreen = False
         self.themeName = tk.StringVar(value="Light")
         self.pieceStyle = tk.StringVar(value="Classic")
@@ -43,24 +48,36 @@ class OthelloGUI:
         self.boardPixels = 0
         self.colors = LIGHT_THEME
 
-        #BUILD WINDOW COMPONENTS
+        # AI SEARCH RESULTS ARE DELIVERED TO THE TKINTER THREAD THROUGH A QUEUE
+        self.aiResults = queue.Queue()
+        self.searchGeneration = 0
+        self.aiPending = False
+        self.aiThinking = False
+        self.aiAfterId = None
+        self.debugWindow = None
+        self.debugText = None
+        self.lastDebugReport = "No AI search has been completed yet."
+        self.closing = False
+
         self.createMenu()
         self.createLayout()
         self.applyTheme()
         self.updateStatus()
 
-        #KEYBOARD SHORTCUTS AND RESIZING
+        # KEYBOARD SHORTCUTS AND RESIZING
         self.root.bind("<F11>", self.toggleFullscreen)
         self.root.bind("<Escape>", self.exitFullscreen)
         self.canvas.bind("<Button-1>", self.handleClick)
         self.boardFrame.bind("<Configure>", self.resizeBoard)
+        self.root.protocol("WM_DELETE_WINDOW", self.closeWindow)
         self.root.after_idle(self.refreshBoard)
+        self.root.after(50, self.pollAIResults)
 
-        #WELCOME MESSAGE
+        # CHANGE OF AI COLOR STARTS A NEW GAME
+        self.aiColor.trace_add("write", self.onAIColorChanged)
         self.messageLabel.configure(text="Welcome to Othello!")
 
     def createMenu(self):
-        #CREATE NATIVE DESKTOP MENU BAR
         self.menuBar = tk.Menu(self.root)
         self.root.config(menu=self.menuBar)
 
@@ -73,7 +90,7 @@ class OthelloGUI:
         gameMenu.add_command(label="New Game", command=self.newGame)
         gameMenu.add_command(label="Fullscreen (F11)", command=self.toggleFullscreen)
         gameMenu.add_separator()
-        gameMenu.add_command(label="Exit", command=self.root.destroy)
+        gameMenu.add_command(label="Exit", command=self.closeWindow)
         self.menuBar.add_cascade(label="Game", menu=gameMenu)
 
         settingsMenu = tk.Menu(self.menuBar, tearoff=False)
@@ -90,6 +107,7 @@ class OthelloGUI:
         settingsMenu.add_cascade(label="Piece Design", menu=pieceMenu)
         settingsMenu.add_separator()
         settingsMenu.add_command(label="AI Settings...", command=self.openAISettings)
+        settingsMenu.add_command(label="AI Debug Report...", command=self.openDebugWindow)
         self.menuBar.add_cascade(label="Settings", menu=settingsMenu)
 
         helpMenu = tk.Menu(self.menuBar, tearoff=False)
@@ -98,7 +116,7 @@ class OthelloGUI:
         self.menuBar.add_cascade(label="Help", menu=helpMenu)
 
     def createLayout(self):
-        #TOP SCORE AREA
+        # TOP SCORE AREA
         self.scoreFrame = tk.Frame(self.root, height=100)
         self.scoreFrame.pack(side=tk.TOP, fill=tk.X)
         self.scoreFrame.pack_propagate(False)
@@ -111,7 +129,7 @@ class OthelloGUI:
         self.modeLabel = tk.Label(self.scoreFrame, font=("Segoe UI", 10))
         self.modeLabel.pack(side=tk.TOP)
 
-        #BOTTOM STATUS AREA
+        # BOTTOM STATUS AREA
         self.messageFrame = tk.Frame(self.root, height=68)
         self.messageFrame.pack(side=tk.BOTTOM, fill=tk.X)
         self.messageFrame.pack_propagate(False)
@@ -120,7 +138,7 @@ class OthelloGUI:
         self.detailsLabel = tk.Label(self.messageFrame, font=("Segoe UI", 9))
         self.detailsLabel.pack(side=tk.TOP)
 
-        #EXPANDING BOARD AREA
+        # EXPANDING BOARD AREA
         self.boardFrame = tk.Frame(self.root)
         self.boardFrame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.boardFrame.pack_propagate(False)
@@ -129,7 +147,6 @@ class OthelloGUI:
         self.canvas.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
 
     def resizeBoard(self, event=None):
-        #USE THE SMALLER AVAILABLE DIMENSION TO KEEP THE BOARD SQUARE
         frameWidth = self.boardFrame.winfo_width()
         frameHeight = self.boardFrame.winfo_height()
         newPixels = max(1, min(frameWidth, frameHeight) - BOARD_MARGIN - 2 * BOARD_BORDER)
@@ -141,16 +158,13 @@ class OthelloGUI:
         self.drawBoard()
 
     def refreshBoard(self):
-        #REDRAW AFTER A PIECE STYLE OR THEME CHANGE
         self.drawBoard()
 
     def drawBoard(self):
-        #CLEAR ALL OLD CANVAS ITEMS BEFORE REDRAWING
         self.canvas.delete("all")
         if self.squarePixels <= 0:
             return
 
-        #DRAW THE EIGHT BY EIGHT GRID
         for row in range(BOARD_SIZE):
             for col in range(BOARD_SIZE):
                 x1 = col * self.squarePixels
@@ -163,7 +177,6 @@ class OthelloGUI:
         self.drawDisks()
 
     def drawDisks(self):
-        #RENDER DISCS FROM THE BOARD MODEL, NOT A SECOND GUI BOARD
         for row in range(BOARD_SIZE):
             for col in range(BOARD_SIZE):
                 color = self.game.gameBoard.getCell(row, col)
@@ -199,7 +212,6 @@ class OthelloGUI:
                                                 outline="")
 
     def applyTheme(self):
-        #CHANGE WIDGET COLORS WITHOUT ALTERING GAME DATA
         self.colors = LIGHT_THEME if self.themeName.get() == "Light" else DARK_THEME
         self.root.configure(bg=self.colors["background"])
         self.scoreFrame.configure(bg=self.colors["panel"])
@@ -212,56 +224,211 @@ class OthelloGUI:
         for label in (self.messageLabel, self.detailsLabel):
             label.configure(bg=self.colors["status"], fg=self.colors["text"])
         self.refreshBoard()
+        self.refreshDebugWindow()
 
     def updateStatus(self):
-        #READ SCORES DIRECTLY FROM THE CURRENT BOARD
-        blackScore = self.game.getScores()[0]
-        whiteScore = self.game.getScores()[1]
+        blackScore, whiteScore = self.game.getScores()
         self.blackScoreLabel.configure(text=f"Black: {blackScore}")
         self.whiteScoreLabel.configure(text=f"White: {whiteScore}")
-        self.turnLabel.configure(text=f"Turn: {'Black' if self.game.currentPlayer == BLACK_DISK else 'White'}")
+        if self.game.gameOver:
+            self.turnLabel.configure(text="Game Over!")
+            if self.game.winner == BLACK_DISK:
+                self.messageLabel.configure(text="Game Over! Black wins!")
+            elif self.game.winner == WHITE_DISK:
+                self.messageLabel.configure(text="Game Over! White wins!")
+            else:
+                self.messageLabel.configure(text="Game Over! It's a tie!")
+        else:
+            self.turnLabel.configure(text=f"Turn: {self.colorName(self.game.currentPlayer)}")
         self.modeLabel.configure(text=self.gameMode.get())
         self.detailsLabel.configure(text=f"AI Depth: {self.aiDepth.get()}  |  "
                                          f"Alpha-Beta: {'On' if self.alphaBetaEnabled.get() else 'Off'}  |  "
                                          f"Debug: {'On' if self.debugEnabled.get() else 'Off'}")
-        if self.game.gameOver:
-            if self.game.winner == BLACK_DISK:
-                self.messageLabel.configure(text="Game Over! Black wins!")
-                self.turnLabel.configure(text="Game Over!")
-            elif self.game.winner == WHITE_DISK:
-                self.messageLabel.configure(text="Game Over! White wins!")
-                self.turnLabel.configure(text="Game Over!")
-            else:
-                self.messageLabel.configure(text="Game Over! It's a tie!")
-                self.turnLabel.configure(text="Game Over!")
 
+    def colorName(self, color):
+        return "Black" if color == BLACK_DISK else "White"
+
+    def getAIColor(self):
+        return BLACK_DISK if self.aiColor.get() == "Black" else WHITE_DISK
+
+    def isAITurn(self):
+        return (self.gameMode.get() == "Play vs AI" and
+                not self.game.gameOver and
+                self.game.currentPlayer == self.getAIColor())
 
     def changeGameMode(self):
-        self.updateStatus()
-        self.messageLabel.configure(text=f"Selected: {self.gameMode.get()}")
+        self.newGame()
+
+    def onAIColorChanged(self, *args):
+        self.newGame()
+
+    def cancelPendingAI(self):
+        # INVALIDATE IN-FLIGHT WORK; WORKER THREADS NEVER MODIFY THE LIVE GAME
+        self.searchGeneration += 1
+        self.aiPending = False
+        self.aiThinking = False
+        if self.aiAfterId is not None:
+            try:
+                self.root.after_cancel(self.aiAfterId)
+            except tk.TclError:
+                pass
+            self.aiAfterId = None
 
     def newGame(self):
+        self.cancelPendingAI()
         self.game.resetGame()
+        self.ai = OthelloAI()
+        self.lastDebugReport = "No AI search has been completed yet."
+        self.refreshDebugWindow()
         self.updateStatus()
         self.refreshBoard()
         self.messageLabel.configure(text="New game started. Black goes first.")
+        self.scheduleAITurn()
+
+    def scheduleAITurn(self):
+        if self.closing or self.aiPending or not self.isAITurn():
+            return
+        self.aiPending = True
+        self.messageLabel.configure(text=f"Computer ({self.aiColor.get()}) is thinking...")
+        self.aiAfterId = self.root.after(AI_DELAY_MS, self.startAISearch)
+
+    def startAISearch(self):
+        self.aiAfterId = None
+        if self.closing or not self.aiPending or not self.isAITurn():
+            self.aiPending = False
+            return
+        self.aiThinking = True
+        generation = self.searchGeneration
+        position = self.game.copyGame()
+        color = self.getAIColor()
+        depth = max(1, int(self.aiDepth.get()))
+        useAlphaBeta = bool(self.alphaBetaEnabled.get())
+
+        # SEARCH OFF THE UI THREAD; USE A FRESH AI OBJECT FOR EACH SEARCH
+        def searchWorker():
+            searchAI = OthelloAI()
+            try:
+                move = searchAI.chooseMove(position, depth, color, useAlphaBeta)
+                self.aiResults.put((generation, move, searchAI, color, depth,
+                                    useAlphaBeta, None))
+            except Exception as error:
+                self.aiResults.put((generation, None, None, color, depth,
+                                    useAlphaBeta, error))
+
+        threading.Thread(target=searchWorker, daemon=True).start()
+
+    def pollAIResults(self):
+        if self.closing:
+            return
+        try:
+            while True:
+                generation, move, searchAI, color, depth, useAlphaBeta, error = self.aiResults.get_nowait()
+                if generation != self.searchGeneration or not self.aiPending:
+                    continue
+                self.aiPending = False
+                self.aiThinking = False
+                if error is not None:
+                    self.messageLabel.configure(text="AI search failed. See error dialog.")
+                    messagebox.showerror("AI Search Error", str(error), parent=self.root)
+                    continue
+                if not self.isAITurn() or self.getAIColor() != color:
+                    continue
+                self.ai = searchAI
+                self.lastDebugReport = self.formatDebugReport(searchAI, color, depth, useAlphaBeta)
+                self.refreshDebugWindow()
+                if self.debugEnabled.get():
+                    print(self.lastDebugReport)
+                if move is None:
+                    self.messageLabel.configure(text="AI has no legal move.")
+                    continue
+                if not self.game.makeMove(*move):
+                    messagebox.showerror("AI Move Error", f"AI returned illegal move {move}.",
+                                         parent=self.root)
+                    continue
+                self.updateStatus()
+                self.refreshBoard()
+                if not self.game.gameOver:
+                    self.messageLabel.configure(text=f"Computer ({self.colorName(color)}) played {move}.")
+                self.scheduleAITurn()
+        except queue.Empty:
+            pass
+        self.root.after(50, self.pollAIResults)
+
+    def formatDebugReport(self, searchAI, color, depth, useAlphaBeta):
+        breakdown = searchAI.bestMoveBreakdown
+        path = searchAI.bestMovePath
+        lines = [
+            "OTHELLO AI SEARCH REPORT",
+            "=" * 42,
+            f"Computer color: {self.colorName(color)}",
+            f"Algorithm: {'Alpha-Beta' if useAlphaBeta else 'Mini-Max'}",
+            f"Search depth: {depth}",
+            f"Selected move: {path[0] if path else 'None'}",
+            f"Search score: {searchAI.bestMoveScore}",
+            f"Principal variation: {path}",
+            "",
+            "SEARCH STATISTICS",
+            f"Nodes visited: {searchAI.nodesVisited}",
+            f"Leaf evaluations: {searchAI.nodesEvaluated}",
+            f"Pruning events: {searchAI.pruningEvents}",
+            "",
+            "EVALUATION AT END OF PREDICTED PATH",
+        ]
+        if breakdown is None:
+            lines.append("No breakdown available.")
+        else:
+            for key, value in breakdown.items():
+                lines.append(f"{key}: {value}")
+            if breakdown.get("Evaluated Score") != searchAI.bestMoveScore:
+                lines.extend(["", "Note: the reconstructed path's evaluation differs",
+                              "from the search bound (possible with alpha-beta pruning)."])
+        return "\n".join(lines)
+
+    def openDebugWindow(self):
+        if self.debugWindow is not None and self.debugWindow.winfo_exists():
+            self.debugWindow.lift()
+            self.debugWindow.focus_set()
+            return
+        self.debugWindow = tk.Toplevel(self.root)
+        self.debugWindow.title("AI Debug Report")
+        self.debugWindow.geometry("570x530")
+        self.debugWindow.minsize(390, 280)
+        self.debugText = tk.Text(self.debugWindow, wrap=tk.WORD, font=("Consolas", 10),
+                                 padx=12, pady=12)
+        scrollBar = tk.Scrollbar(self.debugWindow, command=self.debugText.yview)
+        self.debugText.configure(yscrollcommand=scrollBar.set)
+        scrollBar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.debugText.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.refreshDebugWindow()
+        self.debugWindow.protocol("WM_DELETE_WINDOW", self.closeDebugWindow)
+
+    def refreshDebugWindow(self):
+        if self.debugWindow is None or not self.debugWindow.winfo_exists():
+            return
+        self.debugText.configure(state=tk.NORMAL)
+        self.debugText.delete("1.0", tk.END)
+        self.debugText.insert("1.0", self.lastDebugReport)
+        self.debugText.configure(state=tk.DISABLED)
+
+    def closeDebugWindow(self):
+        if self.debugWindow is not None:
+            self.debugWindow.destroy()
+        self.debugWindow = None
+        self.debugText = None
 
     def toggleFullscreen(self, event=None):
-        #F11 TO ENTER OR EXIT FULLSCREEN
         self.isFullscreen = not self.isFullscreen
         self.root.attributes("-fullscreen", self.isFullscreen)
 
     def exitFullscreen(self, event=None):
-        #ESCAPE RETURNS TO WINDOWED MODE
         if self.isFullscreen:
             self.isFullscreen = False
             self.root.attributes("-fullscreen", False)
 
     def openAISettings(self):
-        #OPEN A NONMODAL SETTINGS WINDOW
         settingsWindow = tk.Toplevel(self.root)
         settingsWindow.title("AI Settings")
-        settingsWindow.geometry("350x300")
+        settingsWindow.geometry("350x320")
         settingsWindow.resizable(False, False)
         settingsWindow.transient(self.root)
         frame = tk.Frame(settingsWindow, padx=18, pady=16)
@@ -286,11 +453,15 @@ class OthelloGUI:
 
     def showInstructions(self):
         messagebox.showinfo("How to Play",
-                            "Players alternate placing discs. A legal move must enclose "
-                            "at least one opponent disc in a straight line. Enclosed "
-                            "discs flip to the current player's color. The player "
-                            "with the most discs at the end wins.\n\n"
-                            "Move input will be added in the next milestone.",
+                            "Black moves first. Click an empty square to place a disk. "
+                            "A legal move must enclose at least one opponent disk "
+                            "in a straight line; enclosed disks flip to your color. "
+                            "If a player has no legal move, their turn is skipped. "
+                            "The player with the most disks at the end wins.\n\n"
+                            "Use Game > Play vs AI to face the computer. "
+                            "Choose the computer's color, search depth, and pruning "
+                            "under Settings > AI Settings.\n\n"
+                            "View the most recent search under Settings > AI Debug Report.",
                             parent=self.root)
 
     def showAbout(self):
@@ -298,26 +469,33 @@ class OthelloGUI:
                             "Othello — CSC 475 Project\nPython / Tkinter interface",
                             parent=self.root)
 
-    def run(self):
-        #START THE TKINTER EVENT LOOP
-        self.root.mainloop()
-
     def handleClick(self, event):
-        if self.squarePixels <= 0:
+        if self.squarePixels <= 0 or self.game.gameOver:
             return
-        
+        if self.aiPending or self.isAITurn():
+            self.messageLabel.configure(text="Wait for the computer's turn to finish.")
+            return
+
         col = int(event.x // self.squarePixels)
         row = int(event.y // self.squarePixels)
+        if not (0 <= row < BOARD_SIZE and 0 <= col < BOARD_SIZE):
+            return
 
-        if 0 <= row < BOARD_SIZE and 0 <= col < BOARD_SIZE:
-            if self.game.makeMove(row, col):
-                self.messageLabel.configure(text=f"Move made at ({row}, {col}) by {'Black' if self.game.currentPlayer == WHITE_DISK else 'White'}.")
-                self.updateStatus()
-                self.refreshBoard()
-            else:
-                self.messageLabel.configure(text=f"Invalid move at ({row}, {col}). Try again.")
-        
+        movingColor = self.game.currentPlayer
+        if self.game.makeMove(row, col):
+            self.updateStatus()
+            self.refreshBoard()
+            if not self.game.gameOver:
+                self.messageLabel.configure(
+                    text=f"Move made at ({row}, {col}) by {self.colorName(movingColor)}.")
+            self.scheduleAITurn()
+        else:
+            self.messageLabel.configure(text=f"Invalid move at ({row}, {col}). Try again.")
 
+    def closeWindow(self):
+        self.closing = True
+        self.cancelPendingAI()
+        self.root.destroy()
 
-
-        
+    def run(self):
+        self.root.mainloop()
